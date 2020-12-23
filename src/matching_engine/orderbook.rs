@@ -1,11 +1,19 @@
 use std::collections::{BinaryHeap, HashMap};
 use super::order::{Order, OrderKey, FillEvent, OrderSide};
+use serde::{Serialize};
 
 pub struct Orderbook {
     orders: HashMap<u64, Order>,
     best_sell_orders: BinaryHeap<OrderKey>,
     best_buy_orders: BinaryHeap<OrderKey>,
     time_counter: u64
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OrderbookContent {
+    pub buy_orders: Vec<Order>,
+    pub sell_orders: Vec<Order>
 }
 
 impl Orderbook {
@@ -18,15 +26,10 @@ impl Orderbook {
         }
     }
 
-    pub fn process_order(&mut self, order: &mut Order) -> Vec<FillEvent> {
-        self.time_counter += 1;
-        order.order_key.timestamp = self.time_counter;
-        self.process_order2(order)
-    }
-
-    fn process_order2(&mut self, order: &mut Order)  -> Vec<FillEvent> {
+    pub fn process_order(&mut self, order: &mut Order)  -> Vec<FillEvent> {
         let mut match_events = Vec::new();
         let mut ids_to_remove = Vec::new();
+
         let best_opposite_orders = match order.order_key.order_side {
             OrderSide::Sell => &mut self.best_buy_orders,
             OrderSide::Buy => &mut self.best_sell_orders
@@ -48,17 +51,11 @@ impl Orderbook {
                         break;
                     } else {
                         let best_opposite_order = self.orders.get_mut(&best_opposite_order_key.id).unwrap();
-                        let fill_quantity = std::cmp::min(order.quantity, best_opposite_order.quantity);
-                        let price = best_opposite_order.order_key.price;
-                        order.quantity -= fill_quantity;
-                        best_opposite_order.quantity -= fill_quantity;
+                        let fill_event = order.get_fill_event(best_opposite_order);
+                        match_events.push(fill_event);
 
-                        let (buy_order_id, sell_order_id) = match order.order_key.order_side {
-                            OrderSide::Buy => (order.order_key.id, best_opposite_order.order_key.id),
-                            OrderSide::Sell => (best_opposite_order.order_key.id, order.order_key.id)
-                        };
-
-                        match_events.push(FillEvent {buy_order_id, sell_order_id, price, quantity: fill_quantity});
+                        order.quantity -= fill_event.quantity;
+                        best_opposite_order.quantity -= fill_event.quantity;
 
                         if best_opposite_order.empty() {
                             best_opposite_orders.pop();
@@ -68,7 +65,7 @@ impl Orderbook {
                             best_opposite_order.reload_iceberg_order();
                             self.time_counter += 1;
                             best_opposite_order.order_key.timestamp = self.time_counter;
-                            best_opposite_orders.push(best_opposite_order.order_key);
+                            best_opposite_orders.push(best_opposite_order.order_key.clone());
                         }
 
                         if order.is_iceberg() {
@@ -83,29 +80,41 @@ impl Orderbook {
     }
 
 
-    pub fn add_order(&mut self, order: &Order) {
+    fn add_order(&mut self, order: &mut Order) {
+        self.time_counter += 1;
+        order.order_key.timestamp = self.time_counter;
         self.orders.insert(order.order_key.id, *order);
         match order.order_key.order_side {
             OrderSide::Buy => self.best_buy_orders.push(order.order_key),
             OrderSide::Sell => self.best_sell_orders.push(order.order_key)
         };
+
     }
 
-    pub fn get_buy_orders(&self) -> Vec<Order> {
+    fn get_buy_orders(&self) -> Vec<Order> {
         self.best_buy_orders
             .clone()
             .into_sorted_vec()
             .iter()
+            .rev()
             .map(|order_key| self.orders.get(&order_key.id).unwrap().clone())
             .collect()
     }
 
-    pub fn get_sell_orders(&self) -> Vec<Order> {
+    fn get_sell_orders(&self) -> Vec<Order> {
         self.best_sell_orders
             .clone()
             .into_sorted_vec()
             .iter()
+            .rev()
             .map(|order_key| self.orders.get(&order_key.id).unwrap().clone())
             .collect()
+    }
+
+    pub fn get_orders(&self) -> OrderbookContent {
+        OrderbookContent {
+            buy_orders: self.get_buy_orders(),
+            sell_orders: self.get_sell_orders()
+        }
     }
 }

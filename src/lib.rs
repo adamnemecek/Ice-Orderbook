@@ -1,6 +1,7 @@
 mod matching_engine;
 pub use matching_engine::orderbook::Orderbook;
 pub use matching_engine::order::{FillEvent, Order, OrderKey, OrderSide, IcebergOrder};
+pub use matching_engine::parse::{parse_order, DeserializedOrder};
 
 #[cfg(test)]
 mod tests {
@@ -39,18 +40,40 @@ mod tests {
         iceberg: None
     };
 
+
     #[test]
-    fn no_fill() {
+    fn timestamp_order() {
         let mut orderbook = Orderbook::new();
 
-        let events = orderbook.process_order(&mut LIMIT_BUY_100_15.clone());
-        assert_eq!(events, vec![]);
+        let buy_orders: Vec<Order> = (0..5).map(|i| {
+            Order {
+                order_key: OrderKey {
+                    id: i,
+                    timestamp: i+1,
+                    price: 100,
+                    order_side: OrderSide::Buy,
+                },
+                quantity: 30,
+                iceberg: None
+            }}).collect();
+        let sell_orders: Vec<Order> = (5..10).map(|i| {
+            Order {
+                order_key: OrderKey {
+                    id: i,
+                    timestamp: i+1,
+                    price: 101,
+                    order_side: OrderSide::Sell,
+                },
+                quantity: 30,
+                iceberg: None
+            }}).collect();
 
-        let events = orderbook.process_order(&mut LIMIT_SELL_101_15.clone());
-        assert_eq!(events, vec![]);
+        buy_orders.iter().for_each(|o| { orderbook.process_order(&mut o.clone()); });
+        sell_orders.iter().for_each(|o| { orderbook.process_order(&mut o.clone()); });
 
-        assert_eq!(orderbook.get_buy_orders(), vec![Order {order_key: OrderKey {timestamp: 1, ..LIMIT_BUY_100_15.order_key}, ..LIMIT_BUY_100_15}]);
-        assert_eq!(orderbook.get_sell_orders(), vec![Order {order_key: OrderKey {timestamp: 2, ..LIMIT_SELL_101_15.order_key}, ..LIMIT_SELL_101_15}]);
+        let orders = orderbook.get_orders();
+        assert_eq!(orders.buy_orders, buy_orders);
+        assert_eq!(orders.sell_orders, sell_orders);
     }
 
     #[test]
@@ -77,8 +100,9 @@ mod tests {
         let events = orderbook.process_order(&mut third_order.clone());
         assert_eq!(events, vec![FillEvent {buy_order_id: 1, sell_order_id: 3, price: 100, quantity: 5}]);
 
-        assert_eq!(orderbook.get_buy_orders(), vec![Order {quantity: 10, order_key: OrderKey {timestamp: 1, ..LIMIT_BUY_100_15.order_key}, ..LIMIT_BUY_100_15}]);
-        assert_eq!(orderbook.get_sell_orders(), vec![Order {order_key: OrderKey {timestamp: 2, ..LIMIT_SELL_101_15.order_key}, ..LIMIT_SELL_101_15}]);
+        let orders = orderbook.get_orders();
+        assert_eq!(orders.buy_orders, vec![Order {quantity: 10, order_key: OrderKey {timestamp: 1, ..LIMIT_BUY_100_15.order_key}, ..LIMIT_BUY_100_15}]);
+        assert_eq!(orders.sell_orders, vec![Order {order_key: OrderKey {timestamp: 2, ..LIMIT_SELL_101_15.order_key}, ..LIMIT_SELL_101_15}]);
     }
 
     #[test]
@@ -105,8 +129,9 @@ mod tests {
         let events = orderbook.process_order(&mut sell_order.clone());
         assert_eq!(events, vec![FillEvent {buy_order_id: 1, sell_order_id: 4, price: 100, quantity: 15}]);
 
-        assert_eq!(orderbook.get_buy_orders(), vec![Order {order_key: OrderKey {timestamp: 2, ..LIMIT_BUY_98_100.order_key}, ..LIMIT_BUY_98_100}]);
-        assert_eq!(orderbook.get_sell_orders(), vec![Order {quantity: 35, order_key: OrderKey {timestamp: 3, ..sell_order.order_key}, ..sell_order}]);
+        let orders = orderbook.get_orders();
+        assert_eq!(orders.buy_orders, vec![Order {order_key: OrderKey {timestamp: 2, ..LIMIT_BUY_98_100.order_key}, ..LIMIT_BUY_98_100}]);
+        assert_eq!(orders.sell_orders, vec![Order {quantity: 35, order_key: OrderKey {timestamp: 3, ..sell_order.order_key}, ..sell_order}]);
     }
 
     #[test]
@@ -129,8 +154,9 @@ mod tests {
         let events = orderbook.process_order(&mut sell_order.clone());
         assert_eq!(events, vec![FillEvent {buy_order_id: 1, sell_order_id: 2, price: 100, quantity: 15}]);
 
-        assert_eq!(orderbook.get_buy_orders(), vec![]);
-        assert_eq!(orderbook.get_sell_orders(), vec![]);
+        let orders = orderbook.get_orders();
+        assert_eq!(orders.buy_orders, vec![]);
+        assert_eq!(orders.sell_orders, vec![]);
     }
 
 
@@ -196,8 +222,9 @@ mod tests {
             FillEvent {buy_order_id: 0, sell_order_id: 5, price: 100, quantity: 20},
         ]);
 
-        assert_eq!(orderbook.get_buy_orders(), vec![]);
-        assert_eq!(orderbook.get_sell_orders(), vec![
+        let orders = orderbook.get_orders();
+        assert_eq!(orders.buy_orders, vec![]);
+        assert_eq!(orders.sell_orders, vec![
             Order {
                 order_key: OrderKey {
                     timestamp: 5,
@@ -234,17 +261,18 @@ mod tests {
 
         assert_eq!(events, vec![FillEvent {buy_order_id: 1, sell_order_id: 5, price: 100, quantity: 25}; 12]);
 
-        assert_eq!(orderbook.get_buy_orders(), vec![
+        let orders = orderbook.get_orders();
+        assert_eq!(orders.buy_orders, vec![
             Order {
                 quantity: 100,
                 order_key: OrderKey {
-                    timestamp: 2,
+                    timestamp: 13,
                     ..limit_buy_order.order_key
                 },
                 ..limit_buy_order
             }
         ]);
-        assert_eq!(orderbook.get_sell_orders(), vec![]);
+        assert_eq!(orders.sell_orders, vec![]);
     }
 
     #[test]
@@ -254,14 +282,17 @@ mod tests {
         (0..3).for_each(|i| {
             orderbook.process_order(&mut Order {
                 order_key: OrderKey {
-                    id: i,
+                    id: i+1,
                     timestamp: 0,
                     price: 100,
                     order_side: OrderSide::Sell,
                 },
                 quantity: 100,
                 iceberg: Some(IcebergOrder {
-                    hidden_quantity: 100 * (i+1),
+                    hidden_quantity: match i {
+                        0 | 2 => 100,
+                        _ => 200
+                    },
                     peak_size: 100
                 })
             });
@@ -271,15 +302,30 @@ mod tests {
 
 
         assert_eq!(events, vec![
-            FillEvent {buy_order_id: 4, sell_order_id: 0, price: 100, quantity: 100},
             FillEvent {buy_order_id: 4, sell_order_id: 1, price: 100, quantity: 100},
             FillEvent {buy_order_id: 4, sell_order_id: 2, price: 100, quantity: 100},
-            FillEvent {buy_order_id: 4, sell_order_id: 0, price: 100, quantity: 100},
+            FillEvent {buy_order_id: 4, sell_order_id: 3, price: 100, quantity: 100},
             FillEvent {buy_order_id: 4, sell_order_id: 1, price: 100, quantity: 100},
+            FillEvent {buy_order_id: 4, sell_order_id: 2, price: 100, quantity: 100},
         ]);
 
-        assert_eq!(orderbook.get_buy_orders(), vec![]);
-        assert_eq!(orderbook.get_sell_orders(), vec![
+        let orders = orderbook.get_orders();
+        assert_eq!(orders.buy_orders, vec![]);
+        println!("{:?}", orders.sell_orders);
+        assert_eq!(orders.sell_orders, vec![
+            Order {
+                quantity: 100,
+                order_key: OrderKey {
+                    timestamp: 6,
+                    id: 3,
+                    price: 100,
+                    order_side: OrderSide::Sell
+                },
+                iceberg: Some(IcebergOrder {
+                    peak_size: 100,
+                    hidden_quantity: 0
+                })
+            },
             Order {
                 quantity: 100,
                 order_key: OrderKey {
@@ -290,22 +336,10 @@ mod tests {
                 },
                 iceberg: Some(IcebergOrder {
                     peak_size: 100,
-                    hidden_quantity: 200
-                })
-            },
-            Order {
-                quantity: 100,
-                order_key: OrderKey {
-                    timestamp: 8,
-                    id: 1,
-                    price: 100,
-                    order_side: OrderSide::Sell
-                },
-                iceberg: Some(IcebergOrder {
-                    peak_size: 100,
                     hidden_quantity: 0
                 })
             }
         ]);
     }
+
 }

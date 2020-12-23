@@ -1,6 +1,8 @@
 use std::cmp::Ordering;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct FillEvent {
     pub buy_order_id: u64,
     pub sell_order_id: u64,
@@ -8,28 +10,32 @@ pub struct FillEvent {
     pub quantity: u64
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, Serialize)]
 pub struct OrderKey {
     pub id: u64,
     pub price: u64,
+    #[serde(skip_serializing)]
     pub timestamp: u64,
+    #[serde(skip_serializing)]
     pub order_side: OrderSide,
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize)]
 pub struct Order {
+    #[serde(flatten)]
     pub order_key: OrderKey,
     pub quantity: u64,
+    #[serde(skip_serializing)]
     pub iceberg: Option<IcebergOrder>
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize)]
 pub struct IcebergOrder {
     pub hidden_quantity: u64,
     pub peak_size: u64,
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Deserialize)]
 pub enum OrderSide {
     Buy,
     Sell
@@ -56,6 +62,16 @@ impl Order {
             Some(ref iceberg) => self.quantity == 0 && iceberg.hidden_quantity == 0
         }
     }
+
+    pub fn get_fill_event(&self, maker_order: &Self) -> FillEvent {
+        let fill_quantity = std::cmp::min(self.quantity, maker_order.quantity);
+        let price = maker_order.order_key.price;
+        let (buy_order_id, sell_order_id) = match self.order_key.order_side {
+            OrderSide::Buy => (self.order_key.id, maker_order.order_key.id),
+            OrderSide::Sell => (maker_order.order_key.id, self.order_key.id)
+        };
+        FillEvent {buy_order_id, sell_order_id, price, quantity: fill_quantity}
+    }
 }
 
 impl Ord for OrderKey {
@@ -71,10 +87,11 @@ impl Ord for OrderKey {
                 OrderSide::Buy => return Ordering::Greater,
                 OrderSide::Sell => return Ordering::Less
             }
-        }
-        match self.timestamp > other.timestamp {
-            true => Ordering::Less,
-            false => Ordering::Greater
+        } else {
+            match self.timestamp < other.timestamp {
+                true => Ordering::Greater,
+                false => Ordering::Less
+            }
         }
     }
 }
